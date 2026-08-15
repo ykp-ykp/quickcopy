@@ -87,6 +87,24 @@ assert QGuiApplication.clipboard().text() == "hello world", \
 assert win._selected_key == "greet"
 ok("主窗口列表构建 + 单击复制 Value 到剪贴板")
 
+# 2.4 复制成功后弹出「已复制」Toast（主窗口可见时）
+assert hasattr(win, "toast"), "主窗口应有 toast 成员"
+win.show()
+wait(50)
+win.toast.pop()
+assert win.toast.isVisible(), "pop() 后 Toast 应可见"
+# 完整周期 = 淡入 + 停留 + 淡出，再加余量避开 offscreen 定时抖动
+wait(qc.TOAST_FADE_MS + qc.TOAST_DURATION + qc.TOAST_FADE_MS + 200)
+assert not win.toast.isVisible(), "停留+淡出后 Toast 应自动隐藏"
+# 连续 pop() 不崩溃且重新计时
+win.toast.pop()
+win.toast.pop()
+wait(50)
+assert win.toast.isVisible(), "重复 pop() 后 Toast 仍可见"
+win.toast._hold_timer.stop()
+win.toast.hide()
+ok("复制成功 Toast 淡入 -> 停留 -> 淡出 / 重复触发不崩溃")
+
 # 2.5 复制后该 Key 置顶显示 + 顶部搜索框模糊过滤
 win.cfg.set("email", "a@b.com")
 win.cfg.set("phone", "123")
@@ -141,14 +159,27 @@ wait(400)
 assert not win.panel.isVisible()
 ok("鼠标 0.3s 内重新进入面板可取消自动隐藏")
 
-# 6. 复制时若面板展开 -> 面板 1s 内淡出
+# 6. 复制时若面板展开 -> 面板 1s 内淡出（复制瞬间先 pop Toast）
 win.panel.show_on_screen(screen)
 wait(250)
 win.copy_value("addr")
 assert QGuiApplication.clipboard().text() == "杭州市西湖区"
+wait(30)
+assert win.panel.toast.isVisible(), "面板复制时应弹出「已复制」Toast"
 wait(1000 + 400)
 assert not win.panel.isVisible(), "复制后面板应在 1s 内淡出"
 ok("复制成功后面板 1s 内淡出并关闭")
+
+# 6.4 面板重新唤出时清掉上次的残留 Toast
+win.panel.show_on_screen(screen)
+wait(100)
+win.panel.toast.pop()
+assert win.panel.toast.isVisible(), "残留 Toast 应可见以便被清掉"
+win.panel.show_on_screen(screen)
+assert not win.panel.toast.isVisible(), "show_on_screen 应清掉残留 Toast"
+win.panel.fade_out(150)
+wait(400)
+ok("面板唤出清空残留 Toast")
 
 # 6.5 浮动面板搜索过滤 + 唤出时清空搜索词 + 搜索焦点暂停自动隐藏
 win.panel.show_on_screen(screen)

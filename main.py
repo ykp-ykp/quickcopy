@@ -22,10 +22,10 @@ from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation, QRect,
 from PySide6.QtGui import (QColor, QCursor, QGuiApplication, QIcon, QKeySequence,
                            QShortcut)
 from PySide6.QtWidgets import (QApplication, QDialog, QFrame,
-                               QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
-                               QLineEdit, QMenu, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSystemTrayIcon,
-                               QVBoxLayout, QWidget)
+                               QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
+                               QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPlainTextEdit, QPushButton, QScrollArea,
+                               QSystemTrayIcon, QVBoxLayout, QWidget)
 
 from config_manager import ConfigManager
 
@@ -37,6 +37,8 @@ POLL_INTERVAL = 200               # 鼠标位置轮询间隔（毫秒）
 LEAVE_DELAY = 300                 # 鼠标移出面板后的自动隐藏延时（毫秒）
 PANEL_COPY_FADE_MS = 1000         # 复制成功后面板的淡出时长
 PANEL_LEAVE_FADE_MS = 500         # 鼠标离开后面板的淡出时长
+TOAST_DURATION = 1000             # 「已复制」提示停留时长（毫秒）
+TOAST_FADE_MS = 200               # Toast 淡入 / 淡出时长
 
 # ---------------------------------------------------------------- 全局样式
 APP_QSS = """
@@ -126,6 +128,13 @@ QToolTip {
     background-color: rgba(30, 32, 38, 0.98); color: #dfe3ec;
     border: 1px solid rgba(255, 255, 255, 0.12); padding: 4px 8px;
 }
+
+#toast {
+    background-color: rgba(46, 125, 50, 0.95);
+    border: 1px solid rgba(76, 175, 80, 0.6);
+    border-radius: 14px;
+}
+#toastLabel { color: #ffffff; font-size: 12px; font-weight: bold; }
 """
 
 
@@ -408,6 +417,73 @@ class EntryDialog(QDialog):
         super().mouseReleaseEvent(event)
 
 
+# ---------------------------------------------------------------- 复制提示
+class Toast(QFrame):
+    """「已复制」提示气泡：嵌入容器顶部居中，淡入 -> 停留 -> 淡出后自动隐藏。
+
+    用 QGraphicsOpacityEffect 控制透明度（非顶层窗口，不能用 windowOpacity）。
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("toast")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 6, 14, 6)
+        label = QLabel("✓ 已复制", self)
+        label.setObjectName("toastLabel")
+        lay.addWidget(label)
+
+        self._effect = QGraphicsOpacityEffect(self)
+        self._effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._effect)
+        self._anim = None
+        self.hide()
+
+        # 停留计时：到点后开始淡出
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.setInterval(TOAST_DURATION)
+        self._hold_timer.timeout.connect(
+            lambda: self._fade(1.0, 0.0, TOAST_FADE_MS, self.hide))
+
+    def pop(self):
+        """淡入显示，停留后自动淡出。多次触发会打断上一次的淡出。"""
+        self._hold_timer.stop()
+        if self._anim is not None:
+            self._anim.stop()
+        self._effect.setOpacity(0.0)
+        self.show()
+        self.raise_()
+        self._fade(0.0, 1.0, TOAST_FADE_MS, self._hold_timer.start)
+
+    def reset(self):
+        """立即清空到隐藏状态，供容器重新唤出时清残留。"""
+        self._hold_timer.stop()
+        if self._anim is not None:
+            self._anim.stop()
+        self._effect.setOpacity(0.0)
+        self.hide()
+
+    def _fade(self, start, end, duration, on_finished=None):
+        if self._anim is not None:
+            self._anim.stop()
+        anim = QPropertyAnimation(self._effect, b"opacity", self)
+        anim.setDuration(duration)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        anim.setEasingCurve(QEasingCurve.InOutQuad)
+        if on_finished is not None:
+            anim.finished.connect(on_finished)
+        anim.start()
+        self._anim = anim
+
+    def reposition(self, host_width):
+        """在宿主容器顶部居中。"""
+        self.adjustSize()
+        x = max(0, (host_width - self.width()) // 2)
+        self.move(x, 8)
+
+
 # ---------------------------------------------------------------- 浮动面板
 class FloatingPanel(QWidget):
     """右上角悬停唤出的速览面板：展示全部 Key-Value，点击复制，滚轮翻页。"""
@@ -465,7 +541,15 @@ class FloatingPanel(QWidget):
                                 WINDOW_MARGIN, WINDOW_MARGIN)
         root.addWidget(self.container)
         self.setFixedWidth(PANEL_VISUAL_WIDTH + WINDOW_MARGIN * 2)
+
+        # 复制成功提示气泡：挂在容器顶部，复制后淡入显示
+        self.toast = Toast(self.container)
+        self.toast.reposition(self.container.width())
         self.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.toast.reposition(self.container.width())
 
     # ------------------------------------------------------ 内容
     def _filtered_items(self):
@@ -504,9 +588,10 @@ class FloatingPanel(QWidget):
     # ------------------------------------------------------ 显示 / 隐藏
     def show_on_screen(self, screen):
         """在指定屏幕的右上角弹出（带淡入），高度自适应但不超屏幕 60%。"""
-        # 速览面板每次唤出都是全新视图，不残留上次的搜索词
+        # 速览面板每次唤出都是全新视图，不残留上次的搜索词 / 提示气泡
         self.search_edit.clear()
         self.search_edit.clearFocus()
+        self.toast.reset()
         self.refresh()
         g = screen.geometry()
         n = max(1, len(self._filtered_items()))
@@ -664,6 +749,10 @@ class MainWindow(QWidget):
         root.addWidget(container)
         self.resize(340, 460)
 
+        # 复制成功提示气泡：挂在主容器顶部，随窗口宽度居中
+        self.toast = Toast(container)
+        self.toast.reposition(container.width())
+
         # ---- 浮动面板 ----
         self.panel = FloatingPanel(self.cfg)
         self.panel.copyRequested.connect(self.copy_value)
@@ -702,6 +791,11 @@ class MainWindow(QWidget):
         self.move(g.center() - self.rect().center())
 
         self.refresh_list()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # 窗口宽度变化时让 Toast 跟着重新居中
+        self.toast.reposition(self.toast.parent().width())
 
     # ------------------------------------------------------ 列表
     def _filtered_items(self):
@@ -761,6 +855,12 @@ class MainWindow(QWidget):
         if value is None:
             return
         QGuiApplication.clipboard().setText(value)
+        # 主窗口可见时给一个「已复制」气泡反馈；隐藏时靠浮动面板自身淡出反馈
+        if self.isVisible():
+            self.toast.pop()
+        # 面板展开时也弹一个提示，让用户在面板淡出前就确认复制成功
+        if self.panel.isVisible() and not self.panel.is_hiding():
+            self.panel.toast.pop()
         # 最近使用的 Key 置顶显示，方便下次快速找到
         self.cfg.move_to_top(key)
         self.refresh_list()
