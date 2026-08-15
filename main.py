@@ -446,6 +446,7 @@ class FloatingPanel(QWidget):
         self.cfg = cfg
         self._hiding = False
         self._fade = None
+        self._search_text = ""
 
         # 鼠标移出后的 0.3s 短延时定时器（单次触发）
         self._leave_timer = QTimer(self)
@@ -463,6 +464,15 @@ class FloatingPanel(QWidget):
         header = QLabel("QuickCopy 速览（点击条目复制）", self.container)
         header.setObjectName("panelHeader")
         lay.addWidget(header)
+
+        self.search_edit = QLineEdit(self.container)
+        self.search_edit.setPlaceholderText("搜索 Key…")
+        self.search_edit.setClearButtonEnabled(True)
+        # 仅点击获取焦点：面板弹出时若自动聚焦搜索框，
+        # 「焦点期间不自动隐藏」的保护会让面板永远不消失
+        self.search_edit.setFocusPolicy(Qt.ClickFocus)
+        self.search_edit.textChanged.connect(self._on_search_changed)
+        lay.addWidget(self.search_edit)
 
         self.scroll = QScrollArea(self.container)
         self.scroll.setWidgetResizable(True)
@@ -483,15 +493,28 @@ class FloatingPanel(QWidget):
         self.hide()
 
     # ------------------------------------------------------ 内容
+    def _filtered_items(self):
+        """按搜索框文本过滤（不区分大小写的 Key 子串匹配）。"""
+        items = self.cfg.items()
+        text = self._search_text.strip().lower()
+        if not text:
+            return items
+        return [(k, v) for k, v in items if text in k.lower()]
+
+    def _on_search_changed(self, text):
+        self._search_text = text
+        self.refresh()
+
     def refresh(self):
         while self.list_layout.count():
             item = self.list_layout.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        items = self.cfg.items()
+        items = self._filtered_items()
         if not items:
-            empty = QLabel("暂无条目", self.list_widget)
+            tip = "无匹配条目" if self._search_text.strip() else "暂无条目"
+            empty = QLabel(tip, self.list_widget)
             empty.setObjectName("emptyLabel")
             empty.setAlignment(Qt.AlignCenter)
             self.list_layout.addWidget(empty)
@@ -506,11 +529,14 @@ class FloatingPanel(QWidget):
     # ------------------------------------------------------ 显示 / 隐藏
     def show_on_screen(self, screen):
         """在指定屏幕的右上角弹出（带淡入），高度自适应但不超屏幕 60%。"""
+        # 速览面板每次唤出都是全新视图，不残留上次的搜索词
+        self.search_edit.clear()
+        self.search_edit.clearFocus()
         self.refresh()
         g = screen.geometry()
-        n = max(1, len(self.cfg.items()))
-        content_h = 44 + n * 58  # 估算：头部 + 每个条目约 58px
-        h = max(130, min(content_h + WINDOW_MARGIN * 2, int(g.height() * 0.6)))
+        n = max(1, len(self._filtered_items()))
+        content_h = 82 + n * 58  # 估算：头部 + 搜索框 + 每个条目约 58px
+        h = max(170, min(content_h + WINDOW_MARGIN * 2, int(g.height() * 0.6)))
         x = g.right() - self.width() - 4
         y = g.top()
         self.setGeometry(x, y, self.width(), h)
@@ -555,7 +581,13 @@ class FloatingPanel(QWidget):
 
     # ------------------------------------------------------ 自动消失逻辑
     def schedule_auto_hide(self):
-        """鼠标在面板外：启动 0.3s 延时（若鼠标及时回来则会被取消）。"""
+        """鼠标在面板外：启动 0.3s 延时（若鼠标及时回来则会被取消）。
+
+        搜索框获得焦点时不隐藏——用户在打字时鼠标通常在面板外，
+        此时隐藏会打断输入；焦点转移（点击别处）后下一轮轮询即恢复。
+        """
+        if self.search_edit.hasFocus():
+            return
         if not self._hiding and not self._leave_timer.isActive():
             self._leave_timer.start()
 

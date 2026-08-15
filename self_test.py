@@ -150,6 +150,30 @@ wait(1000 + 400)
 assert not win.panel.isVisible(), "复制后面板应在 1s 内淡出"
 ok("复制成功后面板 1s 内淡出并关闭")
 
+# 6.5 浮动面板搜索过滤 + 唤出时清空搜索词 + 搜索焦点暂停自动隐藏
+win.panel.show_on_screen(screen)
+wait(250)
+win.panel.search_edit.setText("GREE")
+wait(50)
+cards = win.panel.list_widget.findChildren(qc.EntryCard)
+assert [c.key for c in cards] == ["greet"], "面板搜索应不区分大小写过滤 Key"
+# 搜索框有焦点时（用户正在打字）不启动自动隐藏
+win.panel.search_edit.hasFocus = lambda: True  # offscreen 下模拟输入焦点
+win.panel.schedule_auto_hide()
+assert not win.panel._leave_timer.isActive(), "搜索框有焦点时不应启动自动隐藏"
+del win.panel.search_edit.hasFocus
+win.panel.fade_out(150)
+wait(400)
+win.panel.search_edit.setText("残留词")
+win.panel.show_on_screen(screen)
+wait(250)
+assert win.panel.search_edit.text() == "", "面板唤出时应清空上次搜索词"
+assert len(win.panel.list_widget.findChildren(qc.EntryCard)) \
+    == len(win.cfg.items()), "清空搜索后面板应显示全部条目"
+win.panel.fade_out(150)
+wait(400)
+ok("浮动面板搜索过滤 / 唤出清空 / 焦点暂停自动隐藏")
+
 # 7. Toast 自动淡出销毁
 destroyed = {"v": False}
 toast = qc.Toast("✅ 复制成功！", "hello world")
