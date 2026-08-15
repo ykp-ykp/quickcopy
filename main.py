@@ -164,6 +164,30 @@ def load_app_icon():
     return QIcon(resource_path("app.png"))
 
 
+# ---------------------------------------------------------------- 单实例锁
+_SINGLE_INSTANCE_MUTEX = None  # 保持句柄引用，进程退出时由系统释放
+
+
+def ensure_single_instance():
+    """确保同时只有一个 QuickCopy 进程在运行。
+
+    用 Windows 命名互斥体实现：第二个进程拿到 ERROR_ALREADY_EXISTS 直接退出，
+    避免托盘里出现多个 QuickCopy 图标。Qt 的 QLocalServer/QLockFile 方案在
+    崩溃后可能残留锁文件，互斥体由内核在进程退出时自动回收，更可靠。
+    """
+    global _SINGLE_INSTANCE_MUTEX
+    ERROR_ALREADY_EXISTS = 183
+    handle = ctypes.windll.kernel32.CreateMutexW(None, False,
+                                                 "QuickCopySingleInstanceMutex")
+    if not handle:
+        return True  # 创建失败时宁可放行，也不误杀正常启动
+    if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return False
+    _SINGLE_INSTANCE_MUTEX = handle
+    return True
+
+
 # ---------------------------------------------------------------- 开机自启
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "QuickCopy"
@@ -842,6 +866,14 @@ class MainWindow(QWidget):
 def main():
     # 任务栏图标按 AppUserModelID 归组，不设置会回退到 python.exe 的图标
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QuickCopy")
+
+    # 已有实例在运行则直接退出，避免托盘出现多个 QuickCopy
+    if not ensure_single_instance():
+        app = QApplication(sys.argv)
+        app.setStyleSheet(APP_QSS)
+        QMessageBox.information(None, "QuickCopy",
+                                "QuickCopy 已在运行中。\n可从系统托盘图标或屏幕右上角热区唤起。")
+        sys.exit(0)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # 关闭主窗口不退出，驻留托盘
