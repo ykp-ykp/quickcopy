@@ -2,10 +2,9 @@
 """
 QuickCopy - 轻量级 Windows 剪贴板增强器
 =========================================
-* 主界面：Key 列表，单击复制 Value，双击 / 按钮编辑，右键菜单编辑 / 删除
+* 主界面：Key 列表，单击复制 Value，底部按钮编辑 / 删除
 * 最小化或关闭后主程序驻留系统托盘，不退出
 * 鼠标移至屏幕最右上角（热区）唤出浮动速览面板；移出面板 0.3s 后自动淡出
-* 复制成功弹出置顶磨砂 Toast，2 秒内通过透明度动画淡出消失
 * 所有淡出均使用 QPropertyAnimation，不阻塞主线程
 
 运行：python main.py
@@ -32,7 +31,6 @@ WINDOW_MARGIN = 10                # 无边框窗口四周留给阴影的透明�
 HOT_CORNER = 6                    # 右上角热区尺寸（像素）
 POLL_INTERVAL = 200               # 鼠标位置轮询间隔（毫秒）
 LEAVE_DELAY = 300                 # 鼠标移出面板后的自动隐藏延时（毫秒）
-TOAST_FADE_MS = 1600              # Toast 淡出时长（前置停留 400ms，合计约 2s）
 PANEL_COPY_FADE_MS = 1000         # 复制成功后面板的淡出时长
 PANEL_LEAVE_FADE_MS = 500         # 鼠标离开后面板的淡出时长
 
@@ -46,14 +44,6 @@ QWidget { color: #e6e8ee; font-size: 13px; }
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 14px;
 }
-#toastCard {
-    background-color: rgba(32, 34, 42, 240);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 12px;
-}
-#toastTitle { font-size: 15px; font-weight: bold; color: #7ee0a3; }
-#toastValue { color: #b9bec9; font-size: 12px; }
-
 #titleLabel { font-size: 14px; font-weight: bold; }
 #panelHeader { font-size: 13px; font-weight: bold; color: #cfd4de; padding: 4px 6px; }
 #hintLabel { color: #8a8f9c; font-size: 11px; padding: 0 4px 4px 4px; }
@@ -177,74 +167,11 @@ def make_app_icon():
     return QIcon(pix)
 
 
-# ---------------------------------------------------------------- Toast 提示
-class Toast(QWidget):
-    """复制成功提示：置顶、无边框、半透明、鼠标穿透，约 2 秒淡出消失。"""
-
-    _active = 0  # 当前存活数量，用于多个 Toast 层叠偏移
-
-    def __init__(self, title, subtext=""):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-                         | Qt.Tool | Qt.WindowTransparentForInput)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WA_DeleteOnClose)
-
-        card = QFrame(self)
-        card.setObjectName("toastCard")
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(20, 12, 20, 12)
-        lay.setSpacing(4)
-        title_label = QLabel(title, card)
-        title_label.setObjectName("toastTitle")
-        title_label.setAlignment(Qt.AlignCenter)
-        lay.addWidget(title_label)
-        if subtext:
-            sub_label = QLabel(ellipsize(subtext, 40), card)
-            sub_label.setObjectName("toastValue")
-            sub_label.setAlignment(Qt.AlignCenter)
-            lay.addWidget(sub_label)
-        card.setGraphicsEffect(make_shadow())
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.addWidget(card)
-
-        self.adjustSize()
-        self._place()
-        Toast._active += 1
-        self.show()
-
-        # 停留 400ms 后开始 1600ms 透明度淡出，合计约 2 秒消失
-        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
-        self._fade.setDuration(TOAST_FADE_MS)
-        self._fade.setStartValue(1.0)
-        self._fade.setEndValue(0.0)
-        self._fade.setEasingCurve(QEasingCurve.InOutQuad)
-        self._fade.finished.connect(self.close)
-        QTimer.singleShot(400, self._fade.start)
-
-    def _place(self):
-        """显示在鼠标所在屏幕的水平居中、约 1/3 高度处。"""
-        screen = QGuiApplication.screenAt(QCursor.pos()) \
-            or QGuiApplication.primaryScreen()
-        g = screen.availableGeometry()
-        x = g.x() + (g.width() - self.width()) // 2
-        y = g.y() + int(g.height() * 0.30) + Toast._active * 76
-        self.move(x, y)
-
-    def closeEvent(self, event):
-        Toast._active = max(0, Toast._active - 1)
-        super().closeEvent(event)
-
-
 # ---------------------------------------------------------------- 条目卡片
 class EntryCard(QFrame):
     """单个 Key-Value 条目卡片：Key 加粗在上，Value 灰字在下。"""
 
     clicked = Signal(str)
-    doubleClicked = Signal(str)
-    contextRequested = Signal(str, QPoint)
 
     def __init__(self, key, value, parent=None):
         super().__init__(parent)
@@ -276,14 +203,6 @@ class EntryCard(QFrame):
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.key)
         super().mousePressEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.doubleClicked.emit(self.key)
-        super().mouseDoubleClickEvent(event)
-
-    def contextMenuEvent(self, event):
-        self.contextRequested.emit(self.key, event.globalPos())
 
 
 # ---------------------------------------------------------------- 标题栏
@@ -656,10 +575,6 @@ class MainWindow(QWidget):
         self.search_edit.textChanged.connect(self._on_search_changed)
         lay.addWidget(self.search_edit)
 
-        hint = QLabel("单击复制 Value ｜ 双击编辑 ｜ 右键更多", container)
-        hint.setObjectName("hintLabel")
-        lay.addWidget(hint)
-
         self.scroll = QScrollArea(container)
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -755,8 +670,6 @@ class MainWindow(QWidget):
         for i, (k, v) in enumerate(items):
             card = EntryCard(k, v, self.list_widget)
             card.clicked.connect(self._on_card_clicked)
-            card.doubleClicked.connect(self.edit_entry)
-            card.contextRequested.connect(self._on_card_context)
             if k == self._selected_key:
                 card.setSelected(True)
             self.list_layout.addWidget(card)
@@ -776,12 +689,11 @@ class MainWindow(QWidget):
         self.copy_value(key)
 
     def copy_value(self, key):
-        """复制 Value -> 剪贴板，弹 Toast，该 Key 置顶，面板 1s 内淡出。"""
+        """复制 Value -> 剪贴板，该 Key 置顶，面板 1s 内淡出。"""
         value = self.cfg.get(key)
         if value is None:
             return
         QGuiApplication.clipboard().setText(value)
-        Toast("✅ 复制成功！", value)
         # 最近使用的 Key 置顶显示，方便下次快速找到
         self.cfg.move_to_top(key)
         self.refresh_list()
@@ -804,7 +716,7 @@ class MainWindow(QWidget):
     def edit_entry(self, key=None):
         key = key or self._selected_key
         if not key or not self.cfg.contains(key):
-            Toast("未选中条目", "请先点击选择一个条目")
+            QMessageBox.information(self, "提示", "请先点击选择一个条目")
             return
         dlg = EntryDialog(self, "编辑条目", key, self.cfg.get(key) or "")
         if dlg.exec() == QDialog.Accepted:
@@ -821,7 +733,7 @@ class MainWindow(QWidget):
     def delete_entry(self, key=None):
         key = key or self._selected_key
         if not key or not self.cfg.contains(key):
-            Toast("未选中条目", "请先点击选择一个条目")
+            QMessageBox.information(self, "提示", "请先点击选择一个条目")
             return
         ret = QMessageBox.question(
             self, "删除确认", f"确定删除「{key}」吗？",
@@ -831,17 +743,6 @@ class MainWindow(QWidget):
             if self._selected_key == key:
                 self._selected_key = None
             self.refresh_list()
-
-    def _on_card_context(self, key, global_pos):
-        self._select(key)
-        menu = QMenu(self)
-        act_edit = menu.addAction("编辑")
-        act_del = menu.addAction("删除")
-        chosen = menu.exec(global_pos)
-        if chosen is act_edit:
-            self.edit_entry(key)
-        elif chosen is act_del:
-            self.delete_entry(key)
 
     # ------------------------------------------------------ 托盘与显隐
     def hide_to_tray(self):

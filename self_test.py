@@ -174,17 +174,7 @@ win.panel.fade_out(150)
 wait(400)
 ok("浮动面板搜索过滤 / 唤出清空 / 焦点暂停自动隐藏")
 
-# 7. Toast 自动淡出销毁
-destroyed = {"v": False}
-toast = qc.Toast("✅ 复制成功！", "hello world")
-toast.destroyed.connect(lambda: destroyed.__setitem__("v", True))
-wait(100)
-ok("Toast 创建并显示")
-wait(400 + 1600 + 500)  # 停留 400ms + 淡出 1600ms + 余量
-assert destroyed["v"], "Toast 应在约 2 秒后自动销毁"
-ok("Toast 约 2 秒透明度淡出后自动销毁")
-
-# 8. 鼠标轮询函数不崩溃
+# 7. 鼠标轮询函数不崩溃
 win._poll_mouse()
 ok("鼠标位置轮询正常执行")
 
