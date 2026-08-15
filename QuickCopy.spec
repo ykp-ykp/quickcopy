@@ -50,7 +50,8 @@ a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    # app.png: runtime tray / window icon (loaded via resource_path in main.py)
+    datas=[("app.png", ".")],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -78,6 +79,7 @@ exe = EXE(
     a.datas,
     [],
     name="QuickCopy",
+    icon="app.ico",  # exe file icon (Explorer / taskbar), multi-size ico
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

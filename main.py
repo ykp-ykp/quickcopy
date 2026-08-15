@@ -5,18 +5,22 @@ QuickCopy - 轻量级 Windows 剪贴板增强器
 * 主界面：Key 列表，单击复制 Value，底部按钮编辑 / 删除
 * 最小化或关闭后主程序驻留系统托盘，不退出
 * 鼠标移至屏幕最右上角（热区）唤出浮动速览面板；移出面板 0.3s 后自动淡出
+* 托盘菜单可勾选开机自启（写 HKCU Run 注册表，无需管理员权限）
 * 所有淡出均使用 QPropertyAnimation，不阻塞主线程
 
 运行：python main.py
 打包：build.bat（PyInstaller -> 单文件 exe，无控制台黑框）
 """
 
+import ctypes
+import os
 import sys
+import winreg
 
 from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation, QRect,
                             Qt, QTimer, Signal)
 from PySide6.QtGui import (QColor, QCursor, QGuiApplication, QIcon, QKeySequence,
-                           QPainter, QPixmap, QShortcut)
+                           QShortcut)
 from PySide6.QtWidgets import (QApplication, QDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QMessageBox, QPlainTextEdit,
@@ -148,23 +152,52 @@ def make_shadow(blur=24, y_offset=4):
     return effect
 
 
-def make_app_icon():
-    """程序内置图标（避免外部资源文件，方便 PyInstaller 单文件打包）。"""
-    pix = QPixmap(64, 64)
-    pix.fill(Qt.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor("#5b7fff"))
-    p.setPen(Qt.NoPen)
-    p.drawRoundedRect(4, 4, 56, 56, 14, 14)
-    p.setPen(QColor("#ffffff"))
-    font = p.font()
-    font.setPixelSize(24)
-    font.setBold(True)
-    p.setFont(font)
-    p.drawText(pix.rect(), Qt.AlignCenter, "QC")
-    p.end()
-    return QIcon(pix)
+def resource_path(name):
+    """资源文件路径：兼容 PyInstaller 单文件打包后的临时解压目录。"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+def load_app_icon():
+    """应用图标（app.png 由 make_icon.py 生成，并随 spec 打进 exe）。"""
+    return QIcon(resource_path("app.png"))
+
+
+# ---------------------------------------------------------------- 开机自启
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_NAME = "QuickCopy"
+
+
+def _autostart_command():
+    """写进注册表的启动命令：打包 exe 直接启动；源码运行用 pythonw 无窗启动。"""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+    return f'"{pythonw}" "{os.path.abspath(__file__)}"'
+
+
+def get_autostart(name=AUTOSTART_NAME):
+    """当前用户是否已注册开机自启。"""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, name)
+        return bool(value)
+    except OSError:
+        return False
+
+
+def set_autostart(enabled, name=AUTOSTART_NAME):
+    """写入 / 删除当前用户的开机自启注册表项（HKCU，无需管理员权限）。"""
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                        winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ,
+                              _autostart_command())
+        else:
+            try:
+                winreg.DeleteValue(key, name)
+            except FileNotFoundError:
+                pass
 
 
 # ---------------------------------------------------------------- 条目卡片
@@ -613,16 +646,27 @@ class MainWindow(QWidget):
         self.panel.copyRequested.connect(self.copy_value)
 
         # ---- 系统托盘 ----
-        self.tray = QSystemTrayIcon(make_app_icon(), self)
+        self.tray = QSystemTrayIcon(load_app_icon(), self)
         self.tray.setToolTip("QuickCopy")
         tray_menu = QMenu()
         act_show = tray_menu.addAction("显示主界面")
         act_show.triggered.connect(self.show_main)
+        self.act_autostart = tray_menu.addAction("开机自启")
+        self.act_autostart.setCheckable(True)
+        self.act_autostart.setChecked(get_autostart())
+        # 勾选状态以注册表为准，连接 toggled 要在 setChecked 之后，
+        # 避免初始化时被当成一次用户勾选
+        self.act_autostart.toggled.connect(set_autostart)
+        tray_menu.addSeparator()
         act_quit = tray_menu.addAction("退出 QuickCopy")
         act_quit.triggered.connect(self.quit_app)
         self.tray.setContextMenu(tray_menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
+
+        # exe 被移动过会导致注册表里的自启路径失效，启动时按当前路径重写一遍
+        if get_autostart():
+            set_autostart(True)
 
         # ---- 鼠标位置轮询（右上角热区唤醒 + 面板自动消失）----
         self.mouse_timer = QTimer(self)
@@ -797,11 +841,14 @@ class MainWindow(QWidget):
 
 # ---------------------------------------------------------------- 入口
 def main():
+    # 任务栏图标按 AppUserModelID 归组，不设置会回退到 python.exe 的图标
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QuickCopy")
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # 关闭主窗口不退出，驻留托盘
     app.setApplicationName("QuickCopy")
     app.setStyleSheet(APP_QSS)
-    app.setWindowIcon(make_app_icon())
+    app.setWindowIcon(load_app_icon())
 
     window = MainWindow()
     window.show()

@@ -174,6 +174,15 @@ win.panel.fade_out(150)
 wait(400)
 ok("浮动面板搜索过滤 / 唤出清空 / 焦点暂停自动隐藏")
 
+# 6.6 开机自启注册表读写（用独立 value 名，不碰真实设置）
+_test_name = "QuickCopy_selftest"
+qc.set_autostart(True, _test_name)
+assert qc.get_autostart(_test_name), "写入后应读到开机自启已开启"
+qc.set_autostart(False, _test_name)
+assert not qc.get_autostart(_test_name), "删除后应读到开机自启已关闭"
+qc.set_autostart(False, _test_name)  # 重复删除应幂等不报错
+ok("开机自启注册表写入 / 读取 / 删除")
+
 # 7. 鼠标轮询函数不崩溃
 win._poll_mouse()
 ok("鼠标位置轮询正常执行")
