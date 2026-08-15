@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller artifacts
+build/
+dist/
+
+# Runtime user data
+quickcopy_data.json
+quickcopy_data.json.bak
+quickcopy_data.json.tmp
+
+# Logs & temp
+build_run.log
+.confluence-mcp-temp/
