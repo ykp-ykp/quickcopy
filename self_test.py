@@ -8,7 +8,7 @@ import tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.stdout.reconfigure(encoding="utf-8")
 
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QPoint, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
@@ -135,29 +135,68 @@ wait(100)
 assert not win.isVisible()
 ok("关闭主窗口仅隐藏（驻留托盘）")
 
-# 4. 浮动面板：唤出 -> 内容正确 -> 0.3s 延时后自动淡出消失
+# 4. 浮动面板：唤出 -> 内容正确 -> 延时后自动淡出消失
 screen = QGuiApplication.primaryScreen()
 win.panel.show_on_screen(screen)
 wait(300)
 assert win.panel.isVisible()
 assert win.panel.list_layout.count() >= 4  # 2 卡片 + 1 分隔线 + stretch
 win.panel.schedule_auto_hide()  # 模拟鼠标移出
-wait(300 + 500 + 400)           # 延时 300ms + 淡出 500ms + 余量
+wait(qc.LEAVE_DELAY + qc.PANEL_LEAVE_FADE_MS + 400)  # 延时 + 淡出 + 余量
 assert not win.panel.isVisible(), "面板应在鼠标离开后自动消失"
-ok("浮动面板唤出 / 分隔线 / 移出 0.3s 后自动淡出消失")
+ok("浮动面板唤出 / 分隔线 / 移出延时后自动淡出消失")
 
-# 5. 0.3s 内鼠标重新进入 -> 取消自动隐藏
+# 5. 延时内鼠标重新进入 -> 取消自动隐藏
 win.panel.show_on_screen(screen)
 wait(250)
 win.panel.schedule_auto_hide()
 wait(100)
 win.panel.cancel_auto_hide()    # 模拟鼠标重新进入
-wait(600)
+wait(qc.LEAVE_DELAY + 300)
 assert win.panel.isVisible(), "鼠标及时回来后面板不应消失"
 win.panel.fade_out(150)
 wait(400)
 assert not win.panel.isVisible()
-ok("鼠标 0.3s 内重新进入面板可取消自动隐藏")
+ok("延时内鼠标重新进入面板可取消自动隐藏")
+
+# 5.5 淡出途中鼠标回到面板 -> 打断淡出恢复显示；复制导致的淡出不可打断
+win.panel.show_on_screen(screen)
+wait(250)
+win.panel.fade_out(300)              # 自动隐藏类淡出（默认可打断）
+wait(100)
+assert win.panel.is_hiding(), "淡出进行中应处于 hiding 状态"
+win.panel.cancel_fade_out()          # 模拟鼠标回到面板
+wait(250)
+assert win.panel.isVisible() and not win.panel.is_hiding(), \
+    "鼠标移回应打断淡出，面板恢复显示"
+assert abs(win.panel.windowOpacity() - 1.0) < 0.01, "恢复后应回到完全不透明"
+win.panel.fade_out(300, cancellable=False)  # 复制成功后的淡出不可打断
+wait(100)
+win.panel.cancel_fade_out()          # 尝试打断：应无效
+wait(300 + 200)
+assert not win.panel.isVisible(), "复制导致的淡出不应被鼠标移回打断"
+ok("淡出途中移回可打断恢复 / 复制淡出不可打断")
+
+# 5.6 covers() 存活判定：面板左下角右上方为存活区域，
+#     且光标 x 超出屏幕 right() 1px（高分屏缩放舍入误差）也算存活，
+#     否则角落光标会被误判「面板外」导致面板隐藏->唤出死循环
+win.panel.show_on_screen(screen)
+wait(250)
+vr = win.panel.visual_rect()
+g = screen.geometry()
+assert win.panel.covers(QPoint(g.right() + 1, g.top())), \
+    "屏幕右缘 1px 舍入误差应仍算「在面板内」"
+assert win.panel.covers(QPoint(vr.left(), vr.bottom())), \
+    "面板左下角应算「在面板内」"
+assert win.panel.covers(QPoint(vr.left() + 50, vr.top() + 50)), \
+    "面板内部应算「在面板内」"
+assert not win.panel.covers(QPoint(vr.left() - 100, vr.bottom())), \
+    "面板左缘以左应算「面板外」"
+assert not win.panel.covers(QPoint(vr.left(), vr.bottom() + 100)), \
+    "面板底缘以下应算「面板外」"
+win.panel.fade_out(150)
+wait(400)
+ok("covers() 象限判定 / 屏幕右缘 1px 舍入误差兼容")
 
 # 6. 复制时若面板展开 -> 面板 1s 内淡出（复制瞬间先 pop Toast）
 win.panel.show_on_screen(screen)

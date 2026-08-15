@@ -4,7 +4,8 @@ QuickCopy - 轻量级 Windows 剪贴板增强器
 =========================================
 * 主界面：Key 列表，单击复制 Value，底部按钮编辑 / 删除
 * 最小化或关闭后主程序驻留系统托盘，不退出
-* 鼠标移至屏幕最右上角（热区）唤出浮动速览面板；移出面板 0.3s 后自动淡出
+* 鼠标移至屏幕最右上角（热区）唤出浮动速览面板；移出面板 0.3s 后自动淡出，
+  淡出途中鼠标移回面板可打断淡出、恢复显示（复制成功后的淡出不可打断）
 * 托盘菜单可勾选开机自启（写 HKCU Run 注册表，无需管理员权限）
 * 所有淡出均使用 QPropertyAnimation，不阻塞主线程
 
@@ -496,6 +497,7 @@ class FloatingPanel(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.cfg = cfg
         self._hiding = False
+        self._hide_cancellable = True  # 当前淡出是否允许被「鼠标移回」打断
         self._fade = None
         self._search_text = ""
 
@@ -607,11 +609,16 @@ class FloatingPanel(QWidget):
         self.show()
         self._animate_opacity(0.0, 1.0, 180)
 
-    def fade_out(self, duration=PANEL_LEAVE_FADE_MS):
-        """透明度动画淡出后完全隐藏。"""
+    def fade_out(self, duration=PANEL_LEAVE_FADE_MS, cancellable=True):
+        """透明度动画淡出后完全隐藏。
+
+        cancellable=False 用于「复制成功」这类用户预期面板必消失的场景：
+        鼠标停在面板上也不会打断淡出，避免面板赖着遮挡后续操作。
+        """
         if self._hiding or not self.isVisible():
             return
         self._hiding = True
+        self._hide_cancellable = cancellable
         self._leave_timer.stop()
 
         def _done():
@@ -623,6 +630,18 @@ class FloatingPanel(QWidget):
 
     def is_hiding(self):
         return self._hiding
+
+    def cancel_fade_out(self):
+        """淡出途中鼠标回到面板：打断淡出并反向淡入恢复显示。
+
+        QPropertyAnimation.stop() 不会触发旧动画的 finished 回调，
+        因此淡出注册的 hide() 不会被执行，面板安全恢复。
+        仅对「鼠标离开导致的自动隐藏淡出」生效；复制成功后的淡出不可打断。
+        """
+        if not self._hiding or not self._hide_cancellable:
+            return
+        self._hiding = False
+        self._animate_opacity(self.windowOpacity(), 1.0, 150)
 
     def _animate_opacity(self, start, end, duration, on_finished=None):
         if self._fade is not None:
@@ -665,20 +684,19 @@ class FloatingPanel(QWidget):
     def covers(self, pos):
         """判断光标是否应视为「在面板内」。
 
-        除面板可视区域外，还把面板正上方到屏幕右上角的热区条带算进来，
-        避免光标停在屏幕最角落时面板反复闪现。
+        规则：以面板左下角为界，光标 x >= 面板左缘 且 y <= 面板底缘
+        （即停留在面板左下角的右上方）就算「在面板内」。
+        不钳制屏幕右缘：高分屏缩放下光标顶到屏幕最右缘时，逻辑坐标
+        可能四舍五入超出 screen.right() 1px（如 2240px 物理宽 / 150% 缩放
+        -> 右缘逻辑坐标 1493 > right()=1492），钳制会导致角落光标被判成
+        「面板外」，面板陷入 隐藏->角落重新唤出 的死循环。
         """
         if not self.isVisible():
             return False
-        vr = self.visual_rect()
-        if vr.contains(pos):
+        if self.geometry().contains(pos):
             return True
-        screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
-        g = screen.geometry()
-        corner_strip = QRect(vr.left(), g.top(),
-                             g.right() - vr.left() + 1,
-                             vr.bottom() - g.top() + 1)
-        return corner_strip.contains(pos)
+        vr = self.visual_rect()
+        return pos.x() >= vr.left() and pos.y() <= vr.bottom()
 
 
 # ---------------------------------------------------------------- 主窗口
@@ -866,7 +884,8 @@ class MainWindow(QWidget):
         self.refresh_list()
         self.scroll.verticalScrollBar().setValue(0)
         if self.panel.isVisible() and not self.panel.is_hiding():
-            self.panel.fade_out(PANEL_COPY_FADE_MS)
+            # 复制成功 = 用户马上要切走粘贴，面板必须消失，不可被鼠标移回打断
+            self.panel.fade_out(PANEL_COPY_FADE_MS, cancellable=False)
 
     # ------------------------------------------------------ 增删改
     def add_entry(self):
@@ -922,7 +941,7 @@ class MainWindow(QWidget):
 
     def show_main(self):
         if self.panel.isVisible():
-            self.panel.fade_out(200)
+            self.panel.fade_out(200, cancellable=False)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -954,11 +973,15 @@ class MainWindow(QWidget):
             if pos.x() >= g.right() - HOT_CORNER and pos.y() <= g.top() + HOT_CORNER:
                 self.panel.show_on_screen(screen)
 
-        # 面板展开中：光标离开面板 -> 0.3s 延时后自动淡出；回来则取消
-        if self.panel.isVisible() and not self.panel.is_hiding():
+        # 面板展开中：光标在面板上 -> 取消自动隐藏（淡出途中回来则打断淡出、
+        # 恢复显示）；光标离开面板 -> 0.3s 延时后自动淡出
+        if self.panel.isVisible():
             if self.panel.covers(pos):
-                self.panel.cancel_auto_hide()
-            else:
+                if self.panel.is_hiding():
+                    self.panel.cancel_fade_out()
+                else:
+                    self.panel.cancel_auto_hide()
+            elif not self.panel.is_hiding():
                 self.panel.schedule_auto_hide()
 
 
