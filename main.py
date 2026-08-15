@@ -44,7 +44,8 @@ APP_QSS = """
 QWidget { color: #e6e8ee; font-size: 13px; }
 
 #appContainer, #panelContainer, #dialogContainer {
-    background-color: rgba(28, 30, 37, 245);
+    /* 纯不透明背景：窗口始终 100% 不透明，不透出背后的内容 */
+    background-color: rgb(28, 30, 37);
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 14px;
 }
@@ -221,8 +222,6 @@ class EntryCard(QFrame):
         key_label.setObjectName("keyLabel")
         value_label = QLabel(ellipsize(value, 42) if value.strip() else "（空）", self)
         value_label.setObjectName("valueLabel")
-        if value.strip():
-            value_label.setToolTip(value)
 
         lay.addWidget(key_label)
         lay.addWidget(value_label)
